@@ -1,41 +1,43 @@
 #!/usr/bin/env python3
-"""Ship the 24 November 2026 front page to the grader's output folder.
+"""Deliver the 24 November 2026 front page to the grading folder.
 
-The poster is rendered ahead of time by build_poster.py and stored in
-this repository at assets/entry.png. This entry point only reads those
-bytes back, confirms the PNG header says 1024x1024, and writes the
-identical bytes to /output/entry.png. Standard library only, no
-network, and the same bytes on every run.
+build_poster.py draws the poster ahead of time and stores it in this
+repository as assets/entry.png. This entry point only verifies that
+stored file — PNG magic plus 1024x1024 dimensions — and copies the
+identical bytes to $MAKEFUN_OUTPUT_DIR/entry.png (default /output).
+Pure standard library, no network, deterministic: the same bytes come
+out on every run.
 """
+
 import os
 import struct
 import sys
 from pathlib import Path
 
-SIZE = (1024, 1024)
+WANT = (1024, 1024)
 MAGIC = b"\x89PNG\r\n\x1a\n"
+ASSET = "assets/entry.png"
 
 
-def entry_bytes():
-    here = Path(__file__).resolve().parent
-    blob = (here / "assets" / "entry.png").read_bytes()
-    if blob[:8] != MAGIC:
-        raise SystemExit("assets/entry.png is not a PNG file")
-    width, height = struct.unpack(">II", blob[16:24])
-    if (width, height) != SIZE:
-        raise SystemExit("poster is %dx%d, want 1024x1024" % (width, height))
-    return blob
+def read_asset():
+    root = Path(__file__).resolve().parent
+    data = (root / ASSET).read_bytes()
+    if data[:8] != MAGIC:
+        raise SystemExit("%s is not a PNG file" % ASSET)
+    w, h = struct.unpack(">II", data[16:24])
+    if (w, h) != WANT:
+        raise SystemExit("poster is %dx%d, want 1024x1024" % (w, h))
+    return data
 
 
-def main():
-    blob = entry_bytes()
-    outdir = os.environ.get("MAKEFUN_OUTPUT_DIR", "/output")
-    dest = Path(outdir) / "entry.png"
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    dest.write_bytes(blob)
-    print("wrote %s (%d bytes)" % (dest, len(blob)))
-    return 0
+def ship(data):
+    outdir = Path(os.environ.get("MAKEFUN_OUTPUT_DIR", "/output"))
+    target = outdir / "entry.png"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(data)
+    print("wrote %s (%d bytes)" % (target, len(data)))
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    ship(read_asset())
+    sys.exit(0)

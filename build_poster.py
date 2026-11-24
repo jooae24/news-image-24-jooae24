@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Tuesday 24 November 2026 front page — one 1024x1024 newspaper poster.
 
-Renders a dense broadsheet-style front page: a black masthead, a UTC
-timeline strip, four lead stories with hand-drawn illustrations, a
+A broadsheet front page drawn from scratch with Pillow: black masthead,
+UTC timeline strip, four lead stories with hand-drawn illustrations, a
 twelve-story grid, a pinned world map, a numbered list of the remaining
 stories, and a DATE CHECK footer that is honest about which items
 happened on Monday but were first reported on Tuesday morning in Asia.
@@ -17,100 +17,113 @@ Usage:
     python3 build_poster.py classic assets/entry.png
     python3 build_poster.py markets variants/variant-markets.png
 
-Only the standard library and Pillow are used. No network access.
-The same command always writes byte-identical PNGs.
+Standard library and Pillow only. No network access. The same command
+always writes byte-identical PNGs.
 """
 
 import sys
 
 from PIL import Image, ImageDraw, ImageFont
 
-W, H = 1024, 1024
+PAGE = (1024, 1024)
 
-# --- palette -------------------------------------------------------------
-PAPER = (248, 243, 232)      # warm newsprint
-INK = (18, 18, 18)
-GREY = (90, 90, 86)
-RED = (178, 34, 28)
-NAVY = (28, 52, 96)
-GOLD = (212, 175, 55)
-SEA = (198, 222, 235)        # map ocean
-LAND = (196, 214, 166)       # map land
-LAND_LINE = (120, 140, 100)
-CARD = (255, 253, 247)
-CARD_LINE = (178, 168, 148)
-SKY = (208, 228, 240)
-GREEN = (28, 120, 60)
+PAL = {
+    "paper": (248, 243, 232),
+    "ink": (18, 18, 18),
+    "grey": (90, 90, 86),
+    "red": (178, 34, 28),
+    "navy": (28, 52, 96),
+    "gold": (212, 175, 55),
+    "sea": (198, 222, 235),
+    "land": (196, 214, 166),
+    "land_edge": (120, 140, 100),
+    "card": (255, 253, 247),
+    "card_edge": (178, 168, 148),
+    "sky": (208, 228, 240),
+    "green": (28, 120, 60),
+    "foot": (232, 226, 210),
+}
 
 FONT_DIR = "/usr/share/fonts/truetype/dejavu"
 
-_FONT_CACHE = {}
 
+class Sheet:
+    """A 1024x1024 newsprint page plus the drawing tools used on it."""
 
-def font(sans=True, size=12, bold=False):
-    """Load a DejaVu font, cached by (family, size, bold)."""
-    key = (sans, size, bold)
-    if key not in _FONT_CACHE:
-        if sans:
-            name = "DejaVuSans-Bold.ttf" if bold else "DejaVuSans.ttf"
-        else:
-            name = "DejaVuSerif-Bold.ttf" if bold else "DejaVuSerif.ttf"
-        _FONT_CACHE[key] = ImageFont.truetype(FONT_DIR + "/" + name, size)
-    return _FONT_CACHE[key]
+    def __init__(self):
+        self.image = Image.new("RGB", PAGE, PAL["paper"])
+        self.pen = ImageDraw.Draw(self.image)
+        self._faces = {}
 
-
-def text_w(draw, text, fnt):
-    """Pixel width of text in a font."""
-    return draw.textlength(text, font=fnt)
-
-
-def wrap(draw, text, fnt, max_w):
-    """Greedy word wrap; returns a list of lines that fit max_w."""
-    lines = []
-    for paragraph in text.split("\n"):
-        words = paragraph.split()
-        if not words:
-            lines.append("")
-            continue
-        line = words[0]
-        for word in words[1:]:
-            trial = line + " " + word
-            if text_w(draw, trial, fnt) <= max_w:
-                line = trial
+    def face(self, size, bold=False, serif=False):
+        key = (size, bold, serif)
+        if key not in self._faces:
+            if serif:
+                name = "DejaVuSerif-Bold.ttf" if bold else "DejaVuSerif.ttf"
             else:
-                lines.append(line)
-                line = word
-        lines.append(line)
-    return lines
+                name = "DejaVuSans-Bold.ttf" if bold else "DejaVuSans.ttf"
+            self._faces[key] = ImageFont.truetype(FONT_DIR + "/" + name,
+                                                  size)
+        return self._faces[key]
 
+    def text(self, x, y, s, size=12, bold=False, fill=None, serif=False):
+        self.pen.text((x, y), s, font=self.face(size, bold, serif),
+                      fill=fill or PAL["ink"])
 
-def draw_lines(draw, x, y, lines, fnt, lh, fill, max_lines=None,
-               max_w=None):
-    """Draw wrapped lines; truncate with an ellipsis past max_lines."""
-    shown = lines
-    if max_lines is not None and len(lines) > max_lines:
-        shown = list(lines[:max_lines])
-        last = shown[-1]
-        if max_w is not None:
-            while last and draw.textlength(last + "…", font=fnt) > max_w:
-                last = last[:-1]
-            shown[-1] = last + "…"
-    for i, line in enumerate(shown):
-        draw.text((x, y + i * lh), line, font=fnt, fill=fill)
-    return y + len(shown) * lh
+    def width(self, s, size=12, bold=False, serif=False):
+        return self.pen.textlength(s, font=self.face(size, bold, serif))
 
+    def wrap(self, s, size, max_w, bold=False, serif=False):
+        """Greedy word wrap of s into lines that fit max_w."""
+        face = self.face(size, bold, serif)
+        out = []
+        for chunk in s.split("\n"):
+            words = chunk.split()
+            if not words:
+                out.append("")
+                continue
+            cur = words[0]
+            for word in words[1:]:
+                trial = cur + " " + word
+                if self.pen.textlength(trial, font=face) <= max_w:
+                    cur = trial
+                else:
+                    out.append(cur)
+                    cur = word
+            out.append(cur)
+        return out
 
-def block(draw, x, y, text, fnt, max_w, lh, fill, max_lines=None):
-    """Wrap text and draw it; returns the y just below the block."""
-    return draw_lines(draw, x, y, wrap(draw, text, fnt, max_w),
-                      fnt, lh, fill, max_lines=max_lines, max_w=max_w)
+    def para(self, x, y, s, size, max_w, leading, fill=None, limit=None,
+             bold=False, serif=False):
+        """Draw a wrapped paragraph; returns the y just below it."""
+        lines = self.wrap(s, size, max_w, bold, serif)
+        face = self.face(size, bold, serif)
+        shown = lines
+        if limit is not None and len(lines) > limit:
+            shown = list(lines[:limit])
+            tail = shown[-1]
+            while tail and self.pen.textlength(tail + "…",
+                                               font=face) > max_w:
+                tail = tail[:-1]
+            shown[-1] = tail + "…"
+        for i, line in enumerate(shown):
+            self.pen.text((x, y + i * leading), line, font=face,
+                          fill=fill or PAL["ink"])
+        return y + len(shown) * leading
 
+    def hline(self, x0, y, x1, weight=1, fill=None):
+        self.pen.line([(x0, y), (x1, y)], fill=fill or PAL["ink"],
+                      width=weight)
 
-def rule(draw, x0, y, x1, width=1, fill=INK):
-    draw.line([(x0, y), (x1, y)], fill=fill, width=width)
+    def box(self, x0, y0, x1, y1, fill=None, edge=None):
+        self.pen.rectangle([x0, y0, x1, y1], fill=fill,
+                           outline=edge)
 
-# --- story data ----------------------------------------------------------
-# Leads: number, kicker, dateline, headline, summary, source, art key.
+    def save(self, path):
+        self.image.save(path, format="PNG")
+
+# --- the day's stories ---------------------------------------------------
+# A lead story: number, kicker, dateline, headline, summary, source, art.
 LEADS_CLASSIC = [
     {
         "n": 1, "kicker": "TECH · MARKETS", "place": "SANTA CLARA · NVIDIA",
@@ -353,14 +366,14 @@ PINS_CLASSIC = {
     1: (-122, 37), 2: (21, 52), 3: (106, -6), 4: (20, 32),
     5: (131, 37), 6: (149, -35), 7: (51, 35), 8: (-77, 39),
     9: (34, 31), 10: (-93, 42), 11: (60, 27), 12: (15, 54),
-    13: (33, 69), 14: (7, 45), 15: (175, -41), 16: (6, 46),
+    13: (33, 69), 14: (12, 43), 15: (175, -41), 16: (6, 46),
 }
 
 PINS_MARKETS = {
     1: (-122, 37), 2: (106, -6), 3: (21, 52), 4: (-74, 40),
     5: (20, 32), 6: (131, 37), 7: (149, -35), 8: (51, 35),
     9: (-77, 39), 10: (34, 31), 11: (-93, 42), 12: (60, 27),
-    13: (15, 54), 14: (33, 69), 15: (7, 45), 16: (175, -41),
+    13: (15, 54), 14: (33, 69), 15: (12, 43), 16: (175, -41),
 }
 
 VARIANTS = {
@@ -368,336 +381,339 @@ VARIANTS = {
     "markets": (LEADS_MARKETS, GRID_MARKETS, LIST_MARKETS, PINS_MARKETS),
 }
 
-# Simplified continent outlines (lon, lat), drawn as a stylised strip map.
-CONTINENTS = [
+# --- the world map -------------------------------------------------------
+# My own coarse outlines (lon, lat) for a stylised strip map.
+WORLD = [
     # North America
-    [(-168, 66), (-150, 70), (-135, 69), (-125, 71), (-115, 73),
-     (-100, 73), (-90, 74), (-85, 70), (-80, 73), (-76, 62),
-     (-70, 58), (-65, 60), (-60, 55), (-55, 52), (-60, 47),
-     (-65, 44), (-70, 42), (-75, 38), (-76, 35), (-80, 32),
-     (-81, 26), (-84, 30), (-88, 29), (-91, 19), (-95, 18),
-     (-97, 16), (-92, 15), (-87, 13), (-83, 10), (-79, 9),
-     (-85, 11), (-90, 14), (-95, 16), (-100, 18), (-105, 20),
-     (-110, 23), (-114, 29), (-120, 34), (-124, 40), (-124, 48),
-     (-130, 55), (-140, 60), (-150, 61), (-158, 58), (-165, 60)],
+    [(-168, 66), (-155, 70), (-140, 70), (-135, 68), (-128, 71),
+     (-120, 72), (-110, 72), (-100, 73), (-90, 73), (-87, 70),
+     (-85, 66), (-83, 62), (-81, 58), (-79, 55), (-77, 58),
+     (-79, 62), (-81, 66), (-79, 68), (-76, 62), (-72, 58), (-65, 60),
+     (-60, 55), (-55, 52), (-58, 47), (-60, 45), (-66, 44),
+     (-70, 42), (-74, 40), (-76, 36), (-78, 34), (-80, 32),
+     (-81, 29), (-81, 25), (-82, 27), (-84, 30), (-86, 30),
+     (-88, 29), (-90, 22), (-94, 19),
+     (-97, 16), (-93, 15), (-88, 13), (-84, 11), (-80, 9),
+     (-79, 9), (-83, 10), (-88, 14), (-92, 15), (-96, 16),
+     (-100, 18), (-104, 20), (-107, 21), (-110, 23), (-112, 26),
+     (-114, 29), (-116, 32),
+     (-120, 34), (-124, 40), (-124, 48), (-128, 54), (-135, 58),
+     (-142, 60), (-150, 61), (-156, 58), (-162, 58), (-166, 60)],
     # South America
-    [(-79, 9), (-77, 4), (-80, -3), (-81, -6), (-80, -12),
-     (-77, -18), (-73, -24), (-70, -30), (-70, -37), (-71, -44),
-     (-69, -50), (-66, -55), (-68, -52), (-65, -45), (-62, -40),
-     (-58, -35), (-52, -32), (-48, -28), (-41, -23), (-39, -17),
-     (-35, -9), (-35, -6), (-40, -3), (-44, -2), (-50, 0),
-     (-54, 2), (-58, 6), (-62, 9), (-68, 11), (-72, 12),
+    [(-79, 9), (-77, 5), (-78, 1), (-80, -3), (-81, -6), (-80, -12),
+     (-78, -16), (-74, -20), (-71, -24), (-70, -30), (-71, -35),
+     (-72, -42), (-70, -48), (-66, -55), (-68, -53), (-66, -48),
+     (-63, -42), (-59, -36), (-54, -34), (-49, -28), (-43, -23),
+     (-39, -17), (-35, -10), (-35, -6), (-38, -4), (-44, -2),
+     (-49, 0), (-53, 3), (-57, 6), (-62, 9), (-67, 11), (-72, 12),
      (-76, 10)],
-    # Europe (coarse)
-    [(-10, 36), (-9, 43), (-2, 48), (-4, 52), (-8, 54), (-5, 58),
-     (0, 58), (5, 58), (8, 57), (12, 55), (18, 56), (21, 55),
-     (24, 58), (28, 60), (30, 62), (30, 70), (25, 71), (20, 70),
-     (18, 69), (15, 68), (12, 66), (10, 64), (5, 60), (5, 58),
-     (8, 55), (10, 54), (8, 53), (5, 53), (0, 51), (-2, 50),
-     (-5, 49), (-1, 46), (-4, 44), (-2, 43), (-6, 44), (-9, 43),
-     (-10, 38)],
+    # Europe
+    [(-10, 36), (-9, 40), (-9, 43), (-4, 44), (-2, 47), (-2, 49),
+     (-5, 50), (-5, 53), (-3, 55), (-5, 58), (-2, 58), (2, 58),
+     (6, 57), (8, 57), (10, 57), (13, 55), (17, 56), (20, 55),
+     (23, 57), (26, 59), (29, 60), (30, 62), (30, 66), (28, 70),
+     (25, 71), (20, 70), (18, 69), (14, 67), (12, 65), (10, 63),
+     (6, 60), (5, 58), (6, 55), (8, 54), (6, 53), (2, 51),
+     (0, 50), (-2, 49), (-4, 48), (-2, 46), (-4, 44), (-6, 43),
+     (-9, 41), (-10, 38)],
     # Africa
-    [(-17, 15), (-16, 20), (-15, 25), (-10, 30), (-5, 33), (0, 36),
-     (10, 37), (15, 36), (20, 32), (25, 32), (30, 31), (32, 29),
-     (34, 27), (36, 23), (38, 18), (40, 15), (43, 11), (48, 11),
-     (51, 10), (50, 5), (48, 0), (44, -5), (40, -10), (38, -18),
-     (35, -24), (32, -29), (28, -33), (22, -35), (18, -33), (15, -28),
-     (13, -20), (12, -15), (13, -10), (12, -5), (9, 0), (8, 4),
-     (4, 6), (-2, 5), (-8, 5), (-13, 8), (-17, 12)],
+    [(-17, 15), (-16, 18), (-16, 22), (-14, 26), (-11, 30), (-6, 33),
+     (-1, 35), (4, 37), (9, 37), (13, 36), (18, 33), (22, 32),
+     (27, 31), (31, 31), (33, 29), (35, 27), (37, 22), (39, 18),
+     (41, 14), (44, 11), (48, 11), (51, 11), (51, 8), (48, 3),
+     (44, -2), (41, -6), (39, -11), (37, -17), (35, -22), (33, -27),
+     (30, -31), (27, -33), (22, -35), (18, -33), (16, -29), (14, -24),
+     (12, -18), (13, -12), (12, -7), (10, -2), (9, 1), (7, 4),
+     (3, 6), (-2, 5), (-7, 4), (-12, 7), (-16, 11)],
     # Asia
-    [(30, 36), (35, 36), (40, 38), (44, 39), (48, 40), (50, 42),
-     (53, 44), (55, 46), (58, 48), (60, 50), (62, 52), (65, 55),
-     (68, 58), (70, 62), (72, 66), (75, 70), (78, 72), (82, 73),
-     (86, 74), (90, 75), (95, 76), (100, 77), (105, 77), (110, 76),
-     (115, 74), (120, 73), (125, 72), (130, 71), (135, 71), (140, 72),
-     (145, 72), (150, 70), (155, 69), (158, 66), (160, 62), (162, 60),
-     (160, 56), (158, 52), (155, 50), (150, 48), (145, 44), (142, 42),
-     (140, 38), (138, 35), (135, 34), (132, 33), (130, 31), (127, 34),
-     (126, 38), (122, 38), (120, 32), (118, 28), (115, 24), (112, 21),
-     (110, 20), (108, 16), (106, 10), (104, 9), (101, 7), (99, 10),
-     (97, 14), (94, 17), (92, 21), (90, 22), (88, 22), (86, 20),
-     (84, 18), (81, 15), (79, 13), (77, 8), (76, 10), (74, 15),
-     (72, 20), (70, 21), (68, 23), (66, 25), (64, 25), (62, 25),
-     (60, 25), (58, 26), (56, 26), (54, 27), (52, 28), (50, 29),
-     (48, 30), (46, 29), (44, 29), (42, 30), (40, 31), (38, 33),
-     (36, 36), (34, 36), (32, 36)],
+    [(30, 36), (33, 36), (36, 36), (39, 38), (42, 39), (45, 39),
+     (48, 40), (50, 42), (52, 44), (54, 46), (57, 48), (60, 50),
+     (63, 52), (66, 55), (69, 58), (71, 62), (73, 66), (75, 70),
+     (78, 72), (82, 73), (86, 74), (90, 75), (94, 76), (98, 77),
+     (102, 77), (106, 76), (110, 75), (114, 74), (118, 73), (122, 72),
+     (126, 71), (130, 71), (134, 71), (138, 72), (142, 72), (146, 72),
+     (150, 71), (154, 70), (157, 68), (160, 66), (162, 62), (160, 58),
+     (158, 54), (155, 50), (151, 46), (147, 44), (143, 42), (140, 38),
+     (137, 35), (134, 34), (131, 32), (129, 31), (127, 33), (126, 36),
+     (124, 39), (121, 38), (119, 34), (117, 30), (114, 24), (111, 21),
+     (109, 18), (107, 13), (105, 9), (103, 8), (101, 6), (99, 9),
+     (97, 13), (94, 16), (92, 20), (90, 22), (88, 22), (86, 20),
+     (84, 18), (81, 15), (80, 12), (77, 8), (76, 11), (74, 15),
+     (72, 19), (70, 21), (68, 23), (64, 25), (60, 25), (57, 26),
+     (56, 27), (58, 24), (59, 21), (57, 18), (54, 16), (51, 14),
+     (47, 13), (44, 12), (42, 14), (40, 17), (39, 21), (38, 25),
+     (37, 29), (35, 32), (34, 34), (36, 36), (33, 36)],
     # Australia
-    [(113, -22), (114, -28), (115, -32), (115, -35), (118, -35),
+    [(113, -22), (114, -27), (115, -31), (115, -34), (118, -35),
      (122, -34), (126, -32), (129, -32), (132, -32), (135, -35),
      (138, -35), (140, -38), (143, -39), (146, -39), (149, -37),
      (150, -37), (153, -32), (153, -27), (151, -24), (149, -20),
-     (146, -19), (143, -17), (142, -15), (142, -11), (140, -12),
-     (137, -12), (136, -15), (134, -12), (132, -11), (130, -13),
-     (128, -14), (126, -14), (124, -15), (122, -17), (120, -19),
-     (117, -20), (114, -21)],
+     (146, -19), (143, -16), (142, -14), (142, -11), (140, -12),
+     (137, -12), (135, -14), (133, -12), (131, -12), (129, -14),
+     (126, -14), (123, -16), (121, -19), (118, -20), (115, -21)],
 ]
 
 
 # --- lead illustrations --------------------------------------------------
-def art_nvidia(d, x0, y0, x1, y1):
-    """A green chip with a rising chart and the +31% tag."""
-    d.rectangle([x0, y0, x1, y1], fill=(16, 40, 24))
-    # chip
-    cx0, cy0, cx1, cy1 = x0 + 8, y0 + 8, x0 + 62, y0 + 44
-    d.rectangle([cx0, cy0, cx1, cy1], fill=(28, 120, 60),
-                outline=(120, 200, 140))
-    for px in (cx0 + 12, cx0 + 26, cx0 + 40):
-        d.line([(px, cy0 - 5), (px, cy0)], fill=(120, 200, 140), width=2)
-        d.line([(px, cy1), (px, cy1 + 5)], fill=(120, 200, 140), width=2)
-    d.text((cx0 + 6, cy0 + 10), "NVDA", font=font(True, 13, True),
-           fill=(255, 255, 255))
-    # rising line
-    pts = [(x0 + 70, y0 + 44), (x0 + 92, y0 + 36), (x0 + 112, y0 + 40),
-           (x0 + 134, y0 + 26), (x0 + 156, y0 + 30), (x0 + 178, y0 + 12),
-           (x0 + 198, y0 + 16)]
-    d.line(pts, fill=(120, 230, 140), width=3)
-    d.polygon([(x0 + 198, y0 + 16), (x0 + 188, y0 + 14),
-               (x0 + 196, y0 + 24)], fill=(120, 230, 140))
-    d.text((x1 - 62, y0 + 6), "+31%", font=font(True, 20, True),
-           fill=(120, 230, 140))
-    d.text((x0 + 6, y1 - 12), "board vote unanimous · Trump pushed",
-           font=font(True, 9), fill=(200, 220, 205))
+# Each draws inside the rectangle (x0, y0, x1, y1) of a lead card.
+def art_nvidia(sh, x0, y0, x1, y1):
+    """A green chip, a rising chart and the +31% tag."""
+    sh.box(x0, y0, x1, y1, fill=(16, 40, 24))
+    sh.box(x0 + 10, y0 + 10, x0 + 58, y0 + 42, fill=PAL["green"],
+           edge=(120, 200, 140))
+    for px in (x0 + 22, x0 + 34, x0 + 46):
+        sh.pen.line([(px, y0 + 5), (px, y0 + 10)], fill=(120, 200, 140),
+                    width=2)
+        sh.pen.line([(px, y0 + 42), (px, y0 + 47)], fill=(120, 200, 140),
+                    width=2)
+    sh.text(x0 + 14, y0 + 18, "NVDA", size=13, bold=True,
+            fill=(255, 255, 255))
+    pts = [(x0 + 66, y0 + 44), (x0 + 90, y0 + 34), (x0 + 112, y0 + 38),
+           (x0 + 136, y0 + 24), (x0 + 158, y0 + 28), (x0 + 182, y0 + 12),
+           (x0 + 200, y0 + 16)]
+    sh.pen.line(pts, fill=(120, 230, 140), width=3)
+    sh.pen.polygon([(x0 + 200, y0 + 16), (x0 + 190, y0 + 14),
+                    (x0 + 198, y0 + 24)], fill=(120, 230, 140))
+    sh.text(x1 - 60, y0 + 4, "+31%", size=20, bold=True,
+            fill=(120, 230, 140))
+    sh.text(x0 + 6, y1 - 12, "board vote unanimous · Trump pushed",
+            size=9, fill=(200, 220, 205))
 
 
-def art_nato(d, x0, y0, x1, y1):
-    """An AWACS plane under radar sweeps over a dark sky."""
-    d.rectangle([x0, y0, x1, y1], fill=SKY)
-    d.arc([x0 + 120, y0 - 60, x0 + 220, y0 + 40], 20, 160,
-          fill=NAVY, width=2)
-    d.arc([x0 + 130, y0 - 50, x0 + 210, y0 + 30], 20, 160,
-          fill=(90, 120, 170), width=1)
-    # fuselage + radar dome
-    d.ellipse([x0 + 60, y0 + 14, x0 + 170, y0 + 34], fill=NAVY)
-    d.ellipse([x0 + 100, y0 + 6, x0 + 140, y0 + 18], fill=(60, 80, 120))
-    d.polygon([(x0 + 170, y0 + 20), (x0 + 196, y0 + 24),
-               (x0 + 170, y0 + 28)], fill=NAVY)
-    d.polygon([(x0 + 70, y0 + 30), (x0 + 90, y0 + 44),
-               (x0 + 96, y0 + 30)], fill=NAVY)
-    d.polygon([(x0 + 130, y0 + 30), (x0 + 150, y0 + 44),
-               (x0 + 156, y0 + 30)], fill=NAVY)
-    d.text((x0 + 6, y0 + 2), "AWACS", font=font(True, 13, True),
-           fill=NAVY)
-    d.text((x0 + 6, y1 - 12), "3 Russian missiles landed Friday",
-           font=font(True, 9), fill=GREY)
+def art_nato(sh, x0, y0, x1, y1):
+    """An AWACS plane under radar sweeps over a pale sky."""
+    sh.box(x0, y0, x1, y1, fill=PAL["sky"])
+    sh.pen.arc([x0 + 118, y0 - 62, x0 + 218, y0 + 38], 20, 160,
+               fill=PAL["navy"], width=2)
+    sh.pen.arc([x0 + 128, y0 - 52, x0 + 208, y0 + 28], 20, 160,
+               fill=(90, 120, 170), width=1)
+    sh.text(x0 + 6, y0 + 2, "AWACS", size=13, bold=True, fill=PAL["navy"])
+    sh.pen.ellipse([x0 + 62, y0 + 16, x0 + 168, y0 + 34],
+                   fill=PAL["navy"])
+    sh.pen.ellipse([x0 + 102, y0 + 8, x0 + 138, y0 + 18],
+                   fill=(60, 80, 120))
+    sh.pen.polygon([(x0 + 168, y0 + 21), (x0 + 194, y0 + 25),
+                    (x0 + 168, y0 + 29)], fill=PAL["navy"])
+    sh.pen.polygon([(x0 + 72, y0 + 32), (x0 + 90, y0 + 44),
+                    (x0 + 96, y0 + 32)], fill=PAL["navy"])
+    sh.pen.polygon([(x0 + 128, y0 + 32), (x0 + 148, y0 + 44),
+                    (x0 + 154, y0 + 32)], fill=PAL["navy"])
+    sh.text(x0 + 6, y1 - 12, "3 Russian missiles landed Friday",
+            size=9, fill=PAL["grey"])
 
 
-def art_factory(d, x0, y0, x1, y1):
+def art_factory(sh, x0, y0, x1, y1):
     """A factory block with flames and smoke, and the death toll."""
-    d.rectangle([x0, y0, x1, y1], fill=(52, 44, 40))
-    d.rectangle([x0 + 14, y0 + 26, x0 + 120, y0 + 52], fill=(120, 110, 100))
-    d.rectangle([x0 + 120, y0 + 18, x0 + 132, y0 + 52], fill=(90, 82, 74))
-    d.rectangle([x0 + 138, y0 + 34, x0 + 190, y0 + 52],
-                fill=(120, 110, 100))
-    # flames
-    for fx, fh in ((x0 + 30, 18), (x0 + 60, 24), (x0 + 92, 16),
-                   (x0 + 150, 14)):
-        d.polygon([(fx - 8, y0 + 28), (fx, y0 + 28 - fh),
-                   (fx + 8, y0 + 28)], fill=(232, 120, 30))
-        d.polygon([(fx - 4, y0 + 28), (fx, y0 + 28 - fh + 8),
-                   (fx + 4, y0 + 28)], fill=(240, 200, 60))
-    d.ellipse([x0 + 150, y0 + 2, x0 + 172, y0 + 16], fill=(150, 150, 150))
-    d.ellipse([x0 + 170, y0 - 2, x0 + 192, y0 + 12], fill=(170, 170, 170))
-    d.text((x1 - 66, y0 + 4), "24 DEAD", font=font(True, 15, True),
-           fill=(255, 210, 90))
-    d.text((x0 + 6, y1 - 12), "~30 still missing in the wreckage",
-           font=font(True, 9), fill=(220, 215, 205))
+    sh.box(x0, y0, x1, y1, fill=(52, 44, 40))
+    sh.box(x0 + 14, y0 + 26, x0 + 118, y0 + 52, fill=(120, 110, 100))
+    sh.box(x0 + 118, y0 + 18, x0 + 130, y0 + 52, fill=(90, 82, 74))
+    sh.box(x0 + 136, y0 + 34, x0 + 188, y0 + 52, fill=(120, 110, 100))
+    for fx, fh in ((x0 + 30, 18), (x0 + 58, 24), (x0 + 90, 16),
+                   (x0 + 148, 14)):
+        sh.pen.polygon([(fx - 8, y0 + 28), (fx, y0 + 28 - fh),
+                        (fx + 8, y0 + 28)], fill=(232, 120, 30))
+        sh.pen.polygon([(fx - 4, y0 + 28), (fx, y0 + 28 - fh + 8),
+                        (fx + 4, y0 + 28)], fill=(240, 200, 60))
+    sh.pen.ellipse([x0 + 148, y0 + 2, x0 + 170, y0 + 16],
+                   fill=(150, 150, 150))
+    sh.pen.ellipse([x0 + 168, y0 - 2, x0 + 190, y0 + 12],
+                   fill=(170, 170, 170))
+    sh.text(x1 - 64, y0 + 4, "24 DEAD", size=15, bold=True,
+            fill=(255, 210, 90))
+    sh.text(x0 + 6, y1 - 12, "~30 still missing in the wreckage",
+            size=9, fill=(220, 215, 205))
 
 
-def art_warship(d, x0, y0, x1, y1):
+def art_warship(sh, x0, y0, x1, y1):
     """A grey corvette on a dark sea, hit by a drone strike."""
-    d.rectangle([x0, y0, x1, y1], fill=(24, 48, 84))
-    d.ellipse([x1 - 34, y0 + 6, x1 - 12, y0 + 28], fill=(232, 200, 120))
-    # hull
-    d.polygon([(x0 + 20, y0 + 34), (x0 + 170, y0 + 34),
-               (x0 + 185, y0 + 44), (x0 + 30, y0 + 44)], fill=(150, 160, 170))
-    d.rectangle([x0 + 60, y0 + 24, x0 + 110, y0 + 34], fill=(120, 130, 140))
-    d.line([(x0 + 85, y0 + 24), (x0 + 85, y0 + 14)], fill=(200, 200, 200),
-           width=2)
-    # explosion + drone
-    d.polygon([(x0 + 150, y0 + 20), (x0 + 160, y0 + 30),
-               (x0 + 172, y0 + 22), (x0 + 180, y0 + 32),
-               (x0 + 164, y0 + 36), (x0 + 158, y0 + 44),
-               (x0 + 146, y0 + 34)], fill=(240, 160, 40))
-    d.ellipse([x0 + 34, y0 + 8, x0 + 46, y0 + 16], fill=(220, 220, 220))
-    for wx in range(x0 + 10, x1 - 8, 22):
-        d.line([(wx, y0 + 50), (wx + 12, y0 + 50)], fill=(120, 170, 210),
-               width=2)
-    d.text((x0 + 6, y1 - 12), "Merkury hit in Benghazi harbour",
-           font=font(True, 9), fill=(220, 225, 235))
+    sh.box(x0, y0, x1, y1, fill=(24, 48, 84))
+    sh.pen.ellipse([x1 - 34, y0 + 6, x1 - 12, y0 + 28],
+                   fill=(232, 200, 120))
+    sh.pen.polygon([(x0 + 20, y0 + 34), (x0 + 168, y0 + 34),
+                    (x0 + 183, y0 + 44), (x0 + 30, y0 + 44)],
+                   fill=(150, 160, 170))
+    sh.box(x0 + 60, y0 + 24, x0 + 108, y0 + 34, fill=(120, 130, 140))
+    sh.pen.line([(x0 + 84, y0 + 24), (x0 + 84, y0 + 14)],
+                fill=(200, 200, 200), width=2)
+    sh.pen.polygon([(x0 + 148, y0 + 20), (x0 + 158, y0 + 30),
+                    (x0 + 170, y0 + 22), (x0 + 178, y0 + 32),
+                    (x0 + 162, y0 + 36), (x0 + 156, y0 + 44),
+                    (x0 + 144, y0 + 34)], fill=(240, 160, 40))
+    sh.pen.ellipse([x0 + 34, y0 + 8, x0 + 46, y0 + 16],
+                   fill=(220, 220, 220))
+    sh.text(x0 + 6, y1 - 12, "Merkury hit in Benghazi harbour",
+            size=9, fill=(220, 225, 235))
 
 
-def art_markets(d, x0, y0, x1, y1):
+def art_markets(sh, x0, y0, x1, y1):
     """A green market board: S&P and Nasdaq up, Dow up."""
-    d.rectangle([x0, y0, x1, y1], fill=(18, 46, 30))
+    sh.box(x0, y0, x1, y1, fill=(18, 46, 30))
     pts = [(x0 + 8, y0 + 44), (x0 + 40, y0 + 38), (x0 + 70, y0 + 42),
            (x0 + 100, y0 + 30), (x0 + 130, y0 + 34), (x0 + 160, y0 + 18),
            (x0 + 190, y0 + 22), (x0 + 210, y0 + 8)]
-    d.line(pts, fill=(120, 230, 140), width=3)
-    d.polygon([(x0 + 210, y0 + 8), (x0 + 200, y0 + 6),
-               (x0 + 208, y0 + 16)], fill=(120, 230, 140))
-    d.text((x0 + 8, y0 + 6), "S&P +4.7%", font=font(True, 14, True),
-           fill=(255, 255, 255))
-    d.text((x0 + 100, y0 + 6), "NASDAQ +6.5%", font=font(True, 14, True),
-           fill=(120, 230, 140))
-    d.text((x0 + 6, y1 - 12), "best day since April 2025 · Dow +1,448",
-           font=font(True, 9), fill=(200, 220, 205))
+    sh.pen.line(pts, fill=(120, 230, 140), width=3)
+    sh.pen.polygon([(x0 + 210, y0 + 8), (x0 + 200, y0 + 6),
+                    (x0 + 208, y0 + 16)], fill=(120, 230, 140))
+    sh.text(x0 + 8, y0 + 6, "S&P +4.7%", size=14, bold=True,
+            fill=(255, 255, 255))
+    sh.text(x0 + 100, y0 + 6, "NASDAQ +6.5%", size=14, bold=True,
+            fill=(120, 230, 140))
+    sh.text(x0 + 6, y1 - 12, "best day since April 2025 · Dow +1,448",
+            size=9, fill=(200, 220, 205))
 
 
 ARTS = {"nvidia": art_nvidia, "nato": art_nato, "factory": art_factory,
         "warship": art_warship, "markets": art_markets}
 
-# --- sections ------------------------------------------------------------
-def draw_masthead(d):
-    d.rectangle([0, 0, W, 94], fill=(12, 12, 12))
-    d.text((14, 8), "THE WORLD IN ONE PAGE",
-           font=font(True, 33, True), fill=(255, 255, 255))
-    d.text((14, 50), "Tuesday 24 November 2026",
-           font=font(False, 29, True), fill=GOLD)
-    d.text((640, 10), "50 STORIES · 6 CONTINENTS",
-           font=font(True, 15, True), fill=(255, 255, 255))
-    d.text((640, 34), "TUESDAY EDITION · ALL TIMES UTC",
-           font=font(True, 11), fill=(190, 190, 185))
-    d.text((640, 52), "Every story happened or was first",
-           font=font(True, 10), fill=(170, 170, 165))
-    d.text((640, 66), "reported on Tuesday 24 Nov 2026*",
-           font=font(True, 10), fill=(170, 170, 165))
+# --- page sections -------------------------------------------------------
+# Fixed geometry, in pixels from the top-left corner of the 1024x1024 page.
+MARGIN = 10
+RIGHT = 1024 - MARGIN
+LEAD_TOP, LEAD_H = 156, 208
+GRID_TOP, CARD_H = 386, 76
+MAP_TOP, MAP_H = 646, 86
+LIST_TOP = 760
+FOOT_TOP = 960
 
 
-def draw_timeline(d):
-    y = 100
-    d.text((10, y), "THE DAY IN UTC", font=font(True, 12, True), fill=RED)
-    rule(d, 10, y + 16, W - 10, width=2, fill=RED)
-    col_w = (W - 20) // 6
-    for i, (when, text) in enumerate(TIMELINE):
-        x = 10 + i * col_w
-        d.text((x, y + 20), when, font=font(True, 11, True), fill=RED)
-        block(d, x, y + 32, text, font(True, 9), col_w - 8, 11, INK,
-              max_lines=2)
+def section_head(sh, y, title):
+    """A red section title with a rule underneath."""
+    sh.text(MARGIN, y, title, size=12, bold=True, fill=PAL["red"])
+    sh.hline(MARGIN, y + 16, RIGHT, weight=2, fill=PAL["red"])
 
 
-def draw_lead(d, story, x, y, w, h):
-    d.rectangle([x, y, x + w, y + h], fill=CARD, outline=CARD_LINE)
-    d.rectangle([x, y, x + 22, y + 22], fill=RED)
-    d.text((x + 6, y + 3), str(story["n"]), font=font(True, 13, True),
-           fill=(255, 255, 255))
-    d.text((x + 28, y + 4), story["kicker"], font=font(True, 10, True),
-           fill=RED)
-    ARTS[story["art"]](d, x + 6, y + 28, x + w - 6, y + 88)
-    d.text((x + 6, y + 92), story["place"], font=font(True, 9, True),
-           fill=NAVY)
-    block(d, x + 6, y + 106, story["headline"], font(False, 13, True),
-          w - 12, 15, INK, max_lines=3)
-    block(d, x + 6, y + 152, story["summary"], font(True, 9),
-          w - 12, 11, INK, max_lines=4)
-    d.text((x + 6, y + h - 13), story["source"], font=font(True, 8),
-           fill=GREY)
+def masthead(sh):
+    sh.box(0, 0, 1024, 94, fill=(12, 12, 12))
+    sh.text(14, 8, "THE WORLD IN ONE PAGE", size=33, bold=True,
+            fill=(255, 255, 255))
+    sh.text(14, 50, "Tuesday 24 November 2026", size=29, bold=True,
+            serif=True, fill=PAL["gold"])
+    sh.text(640, 10, "50 STORIES · 6 CONTINENTS", size=15, bold=True,
+            fill=(255, 255, 255))
+    sh.text(640, 34, "TUESDAY EDITION · ALL TIMES UTC", size=11,
+            fill=(190, 190, 185))
+    sh.text(640, 52, "Every story happened or was first", size=10,
+            fill=(170, 170, 165))
+    sh.text(640, 66, "reported on Tuesday 24 Nov 2026*", size=10,
+            fill=(170, 170, 165))
 
 
-def draw_leads(d, leads):
-    y, h = 156, 208
-    cw = (W - 20 - 3 * 8) // 4
+def timeline(sh):
+    section_head(sh, 100, "THE DAY IN UTC")
+    slot = (RIGHT - MARGIN) // 6
+    for i, (when, what) in enumerate(TIMELINE):
+        x = MARGIN + i * slot
+        sh.text(x, 120, when, size=11, bold=True, fill=PAL["red"])
+        sh.para(x, 132, what, 9, slot - 8, 11, limit=2)
+
+
+def lead_card(sh, story, x, y, w, h):
+    sh.box(x, y, x + w, y + h, fill=PAL["card"], edge=PAL["card_edge"])
+    sh.box(x, y, x + 22, y + 22, fill=PAL["red"])
+    sh.text(x + 6, y + 3, str(story["n"]), size=13, bold=True,
+            fill=(255, 255, 255))
+    sh.text(x + 28, y + 4, story["kicker"], size=10, bold=True,
+            fill=PAL["red"])
+    ARTS[story["art"]](sh, x + 6, y + 28, x + w - 6, y + 88)
+    sh.text(x + 6, y + 92, story["place"], size=9, bold=True,
+            fill=PAL["navy"])
+    sh.para(x + 6, y + 106, story["headline"], 13, w - 12, 15,
+            limit=3, serif=True, bold=True)
+    sh.para(x + 6, y + 152, story["summary"], 9, w - 12, 11, limit=4)
+    sh.text(x + 6, y + h - 13, story["source"], size=8, fill=PAL["grey"])
+
+
+def leads_row(sh, leads):
+    cw = (RIGHT - MARGIN - 3 * 8) // 4
     for i, story in enumerate(leads):
-        draw_lead(d, story, 10 + i * (cw + 8), y, cw, h)
+        lead_card(sh, story, MARGIN + i * (cw + 8), LEAD_TOP, cw, LEAD_H)
 
 
-def draw_grid_card(d, num, kicker, headline, summary, source, x, y, w, h):
-    d.rectangle([x, y, x + w, y + h], fill=CARD, outline=CARD_LINE)
-    d.text((x + 6, y + 4), str(num), font=font(True, 11, True), fill=RED)
-    d.text((x + 24, y + 5), kicker, font=font(True, 9, True), fill=RED)
-    block(d, x + 6, y + 19, headline, font(False, 11, True), w - 12, 13,
-          INK, max_lines=2)
-    block(d, x + 6, y + 46, summary, font(True, 9), w - 12, 11, INK,
-          max_lines=2)
-    d.text((x + 6, y + h - 11), "Source: " + source,
-           font=font(True, 8), fill=GREY)
+def grid_card(sh, num, kicker, headline, summary, source, x, y, w, h):
+    sh.box(x, y, x + w, y + h, fill=PAL["card"], edge=PAL["card_edge"])
+    sh.text(x + 6, y + 4, str(num), size=11, bold=True, fill=PAL["red"])
+    sh.text(x + 24, y + 5, kicker, size=9, bold=True, fill=PAL["red"])
+    sh.para(x + 6, y + 19, headline, 11, w - 12, 13, limit=2,
+            serif=True, bold=True)
+    sh.para(x + 6, y + 46, summary, 9, w - 12, 11, limit=2)
+    sh.text(x + 6, y + h - 11, "Source: " + source, size=8,
+            fill=PAL["grey"])
 
 
-def draw_grid(d, grid):
-    y = 366
-    d.text((10, y), "THE DAY'S NEWS · 5–16", font=font(True, 12, True),
-           fill=RED)
-    rule(d, 10, y + 16, W - 10, width=2, fill=RED)
-    cw = (W - 20 - 3 * 8) // 4
-    ch, gap = 76, 4
-    for i, (kicker, headline, summary, source) in enumerate(grid):
+def grid(sh, stories):
+    section_head(sh, 366, "THE DAY'S NEWS · 5–16")
+    cw = (RIGHT - MARGIN - 3 * 8) // 4
+    for i, (kicker, headline, summary, source) in enumerate(stories):
         row, col = divmod(i, 4)
-        x = 10 + col * (cw + 8)
-        yy = 386 + row * (ch + gap)
-        draw_grid_card(d, 5 + i, kicker, headline, summary, source,
-                       x, yy, cw, ch)
+        grid_card(sh, 5 + i, kicker, headline, summary, source,
+                  MARGIN + col * (cw + 8),
+                  GRID_TOP + row * (CARD_H + 4), cw, CARD_H)
 
 
-def draw_map(d, items, pins):
-    y = 626
-    d.text((10, y), "WHERE IT HAPPENED — pins 1–16 numbered; dots are "
-                    "stories 17–50", font=font(True, 12, True), fill=RED)
-    rule(d, 10, y + 16, W - 10, width=2, fill=RED)
-    mx0, my0, mx1, my1 = 10, 646, W - 10, 732
-    d.rectangle([mx0, my0, mx1, my1], fill=SEA, outline=CARD_LINE)
+def world_map(sh, items, pins):
+    section_head(sh, 626, "WHERE IT HAPPENED — pins 1–16 numbered; "
+                          "dots are stories 17–50")
+    x0, y0, x1, y1 = MARGIN, MAP_TOP, RIGHT, MAP_TOP + MAP_H
+    sh.box(x0, y0, x1, y1, fill=PAL["sea"], edge=PAL["card_edge"])
 
-    def proj(lon, lat):
-        px = mx0 + (lon + 180.0) / 360.0 * (mx1 - mx0)
-        py = my0 + (85.0 - lat) / 145.0 * (my1 - my0)
+    def project(lon, lat):
+        px = x0 + (lon + 180.0) / 360.0 * (x1 - x0)
+        py = y0 + (85.0 - lat) / 145.0 * (y1 - y0)
         return px, py
 
-    for poly in CONTINENTS:
-        pts = [proj(lon, lat) for lon, lat in poly]
-        d.polygon(pts, fill=LAND, outline=LAND_LINE)
-    for num, text, lon, lat in items:
-        px, py = proj(lon, lat)
-        d.ellipse([px - 2, py - 2, px + 2, py + 2], fill=(40, 40, 40))
+    for outline in WORLD:
+        sh.pen.polygon([project(lon, lat) for lon, lat in outline],
+                       fill=PAL["land"], outline=PAL["land_edge"])
+    for _num, _text, lon, lat in items:
+        px, py = project(lon, lat)
+        sh.pen.ellipse([px - 2, py - 2, px + 2, py + 2],
+                       fill=(40, 40, 40))
     for num, (lon, lat) in sorted(pins.items()):
-        px, py = proj(lon, lat)
-        d.ellipse([px - 8, py - 8, px + 8, py + 8], fill=RED,
-                  outline=(255, 255, 255), width=1)
+        px, py = project(lon, lat)
+        sh.pen.ellipse([px - 8, py - 8, px + 8, py + 8], fill=PAL["red"],
+                       outline=(255, 255, 255), width=1)
         label = str(num)
-        tw = d.textlength(label, font=font(True, 8, True))
-        d.text((px - tw / 2, py - 6), label, font=font(True, 8, True),
-               fill=(255, 255, 255))
+        tw = sh.width(label, 8, bold=True)
+        sh.text(px - tw / 2, py - 6, label, size=8, bold=True,
+                fill=(255, 255, 255))
 
 
-def draw_list(d, items):
-    y = 738
-    d.text((10, y), "ALSO ON TUESDAY 24 NOVEMBER · 17–50",
-           font=font(True, 12, True), fill=RED)
-    rule(d, 10, y + 16, W - 10, width=2, fill=RED)
+def story_list(sh, items):
+    section_head(sh, 738, "ALSO ON TUESDAY 24 NOVEMBER · 17–50")
     cols = [items[i::4] for i in range(4)]
-    cw = (W - 20 - 3 * 12) // 4
-    bottom = 0
+    cw = (RIGHT - MARGIN - 3 * 12) // 4
+    lowest = 0
     for ci, col in enumerate(cols):
-        x = 10 + ci * (cw + 12)
-        yy = 760
+        x = MARGIN + ci * (cw + 12)
+        yy = LIST_TOP
         for num, text, _lon, _lat in col:
-            line = "%d. %s" % (num, text)
-            yy = block(d, x, yy, line, font(True, 8), cw, 9, INK,
-                       max_lines=3)
+            yy = sh.para(x, yy, "%d. %s" % (num, text), 8, cw, 9,
+                         limit=3)
             yy += 2
-        bottom = max(bottom, yy)
-    return bottom
+        lowest = max(lowest, yy)
+    return lowest
 
 
-def draw_footer(d):
-    y = 960
-    d.rectangle([10, y, W - 10, y + 50], fill=(232, 226, 210),
-                outline=CARD_LINE)
-    d.text((16, y + 4), "DATE CHECK", font=font(True, 11, True), fill=RED)
-    block(d, 16, y + 18, DATE_CHECK, font(True, 8), W - 32, 10, INK,
-          max_lines=3)
-    d.text((10, 1014), SOURCES, font=font(True, 8), fill=GREY)
+def footer(sh):
+    sh.box(MARGIN, FOOT_TOP, RIGHT, FOOT_TOP + 50, fill=PAL["foot"],
+           edge=PAL["card_edge"])
+    sh.text(16, FOOT_TOP + 4, "DATE CHECK", size=11, bold=True,
+            fill=PAL["red"])
+    sh.para(16, FOOT_TOP + 18, DATE_CHECK, 8, 1024 - 32, 10, limit=3)
+    sh.text(MARGIN, 1014, SOURCES, size=8, fill=PAL["grey"])
 
 
 def render(variant):
-    leads, grid, items, pins = VARIANTS[variant]
-    img = Image.new("RGB", (W, H), PAPER)
-    d = ImageDraw.Draw(img)
-    draw_masthead(d)
-    draw_timeline(d)
-    draw_leads(d, leads)
-    draw_grid(d, grid)
-    draw_map(d, items, pins)
-    list_bottom = draw_list(d, items)
-    draw_footer(d)
-    return img, list_bottom
+    leads, grid_stories, items, pins = VARIANTS[variant]
+    sh = Sheet()
+    masthead(sh)
+    timeline(sh)
+    leads_row(sh, leads)
+    grid(sh, grid_stories)
+    world_map(sh, items, pins)
+    bottom = story_list(sh, items)
+    footer(sh)
+    return sh, bottom
 
 
 def main(argv):
@@ -705,10 +721,10 @@ def main(argv):
     out = argv[2] if len(argv) > 2 else "entry.png"
     if variant not in VARIANTS:
         raise SystemExit("unknown variant: %s" % variant)
-    img, list_bottom = render(variant)
-    img.save(out, format="PNG")
-    print("wrote %s (list bottom %d, footer 960-1010)" % (out, list_bottom))
-    if list_bottom > 958:
+    sh, bottom = render(variant)
+    sh.save(out)
+    print("wrote %s (list bottom %d, footer 960-1010)" % (out, bottom))
+    if bottom > 958:
         print("WARNING: list overflows into footer")
 
 
